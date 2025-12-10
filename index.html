@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Thermal + Night Vision + Distance Camera</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+
+<h2>🔥 Advanced Multi-Vision Camera System</h2>
+
+<div id="camera-container">
+    <video id="camera" autoplay playsinline></video>
+    <canvas id="overlay"></canvas>
+</div>
+
+<div id="controls">
+    <button id="captureBtn">📸 Capture</button>
+    <button id="toggleThermal">🌡 Thermal Mode</button>
+    <button id="toggleNight">🌙 Night Vision</button>
+</div>
+
+<div id="output"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+<script src="yolo.js"></script>
+<script src="script.js"></script>
+
+</body>
+</html>
