@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Thermal-Like Creature Detector + Distance Estimator</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0f1724; --panel:#0b1220; --accent:#ff6b35; --muted:#94a3b8;
+    --glass: rgba(255,255,255,0.04);
+  }
+  *{box-sizing:border-box;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;}
+  body{margin:0;background:linear-gradient(180deg,#071025 0%, #061324 100%);color:#dbe7ff;min-height:100vh;display:flex;gap:20px;padding:28px;}
+  .app{display:grid;grid-template-columns: 780px 360px;gap:20px;width:100%;max-width:1160px;margin:auto;}
+  .card{background:var(--panel);padding:14px;border-radius:12px;box-shadow:0 8px 30px rgba(2,6,23,0.6);border:1px solid rgba(255,255,255,0.03);}
+  #videoWrap{position:relative;border-radius:10px;overflow:hidden;height:540px;background:#000;}
+  video, canvas{width:100%;height:100%;display:block;object-fit:cover;}
+  #overlayCanvas{position:absolute;left:0;top:0;pointer-events:none;}
+  .controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;}
+  .btn{background:var(--glass);border:1px solid rgba(255,255,255,0.03);padding:8px 10px;border-radius:8px;color:var(--muted);cursor:pointer;}
+  .btn.active{background:linear-gradient(90deg, rgba(255,107,53,0.14), rgba(255,107,53,0.06));color:#fff;border-color:rgba(255,107,53,0.18);}
+  label.small{font-size:12px;color:var(--muted);display:block;margin-bottom:6px;}
+  .panelTitle{font-weight:700;margin-bottom:8px;}
+  .rightCol{display:flex;flex-direction:column;gap:12px;}
+  .row{display:flex;gap:8px;align-items:center;}
+  .input, input[type="number"]{background:#07102a;border:1px solid rgba(255,255,255,0.03);padding:8px;border-radius:8px;color:#e6f0ff;width:100%;}
+  .range{width:100%;}
+  .smallNote{font-size:12px;color:var(--muted);margin-top:6px;}
+  .status{font-size:13px;color:#bfefff;}
+  footer{font-size:12px;color:var(--muted);margin-top:8px;}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle}
+  .warm{background:linear-gradient(45deg,#ff6b35,#ffcc66)}
+  .cold{background:linear-gradient(45deg,#5fb4ff,#1e88e5)}
+  .kbd{background:#071d33;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.02);font-size:13px}
+  .bigStat{font-weight:700;font-size:18px;color:#fff}
+  .controlsGrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  a.link{color:#9bd7ff;text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div class="panelTitle">Thermal-Like Creature Detector</div>
+        <div class="smallNote">Live simulated thermal visualization + creature detection. For true temperatures, use a radiometric thermal camera.</div>
+      </div>
+      <div class="status" id="status">Status: <span id="statText">stopped</span></div>
+    </div>
+
+    <div id="videoWrap" style="margin-top:12px;">
+      <video id="video" autoplay playsinline muted></video>
+      <!-- processed thermal canvas -->
+      <canvas id="thermalCanvas"></canvas>
+      <!-- overlay for boxes & labels -->
+      <canvas id="overlayCanvas"></canvas>
+    </div>
+
+    <div class="controls" style="margin-top:10px;">
+      <button class="btn" id="btnStart">Start Camera</button>
+      <button class="btn" id="btnStop">Stop</button>
+      <button class="btn" id="btnSnap">Save Snapshot</button>
+      <div style="flex:1"></div>
+      <button class="btn" id="btnToggleColormap">Thermal Colormap: ON</button>
+      <button class="btn" id="btnEnhance">Low-light Enhance: OFF</button>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:12px;align-items:center;">
+      <div style="flex:1">
+        <label class="small">Warm threshold (0-255 intensity)</label>
+        <input id="warmThresh" type="range" min="80" max="255" value="160" class="range">
+      </div>
+      <div style="width:160px">
+        <label class="small">Min box area (px)</label>
+        <input id="minArea" type="number" class="input" value="1000">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <div style="flex:1">
+        <label class="small">Detector model</label>
+        <select id="modelSelect" class="input">
+          <option value="coco-ssd">coco-ssd (person/dog/cat detection)</option>
+        </select>
+      </div>
+      <div style="width:170px">
+        <label class="small">FPS target</label>
+        <input id="fpsTarget" type="number" class="input" value="12">
+      </div>
+    </div>
+
+    <footer>
+      Tip: For better "thermal" results use an IR-sensitive camera or feed from an actual thermal camera. Use the calibration panel (right) to enable distance estimates.
+    </footer>
+  </div>
+
+  <div class="rightCol">
+    <div class="card">
+      <div class="panelTitle">Calibration & Distance</div>
+      <div class="smallNote">Estimate distance using pinhole formula. Calibrate focal length (fx) by placing a known-height object at a known distance and pressing "Calibrate".</div>
+
+      <div style="margin-top:10px;">
+        <label class="small">Real height of object (m)</label>
+        <input id="realHeight" type="number" step="0.01" class="input" value="1.70">
+      </div>
+
+      <div style="margin-top:8px;">
+        <label class="small">Known distance for calibration (m)</label>
+        <input id="knownDist" type="number" step="0.01" class="input" value="2.00">
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button class="btn" id="btnCalibrate">Calibrate (compute fx)</button>
+        <button class="btn" id="btnResetCal">Reset</button>
+      </div>
+
+      <div style="margin-top:12px;">
+        <div class="smallNote">Calibrated focal length (fx in pixels):</div>
+        <div class="bigStat" id="fxVal">—</div>
+        <div class="smallNote" style="margin-top:6px">Last estimated distance shown on video overlay for each detected creature.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="panelTitle">Detection Summary</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+        <span class="dot warm"></span> Warm detected
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+        <span class="dot cold"></span> Not warm / cold
+      </div>
+
+      <div style="margin-top:12px;">
+        <div class="smallNote">Last frame stats</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+          <div>
+            <div class="smallNote">Detections</div>
+            <div id="detCount" class="bigStat">0</div>
+          </div>
+          <div>
+            <div class="smallNote">Warm blobs</div>
+            <div id="warmCount" class="bigStat">0</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:12px;">
+        <div class="smallNote">Controls</div>
+        <div class="controlsGrid" style="margin-top:8px;">
+          <button class="btn" id="btnToggleBoxes">Boxes: ON</button>
+          <button class="btn" id="btnToggleLabels">Labels: ON</button>
+          <button class="btn" id="btnCalibMode">Use Calibration for Distance</button>
+          <button class="btn" id="btnManualFx">Enter fx manually</button>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="card">
+      <div class="panelTitle">Notes & Limitations</div>
+      <ul style="color:var(--muted);padding-left:18px">
+        <li>True temperature readings need a radiometric thermal camera.</li>
+        <li>Distance accuracy depends on correct calibration and object vertical size matching <code>Real height</code>.</li>
+        <li>Low-light enhancement helps but cannot create detail that the camera sensor cannot capture.</li>
+      </ul>
+      <div style="margin-top:8px;">
+        <div class="smallNote">Model & libs loaded from CDN:</div>
+        <div class="smallNote"><a class="link" href="https://www.tensorflow.org/js" target="_blank">TensorFlow.js & coco-ssd</a></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TensorFlow.js & coco-ssd -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+
+<script>
+(async function(){
+  // DOM
+  const video = document.getElementById('video');
+  const thermalCanvas = document.getElementById('thermalCanvas');
+  const overlayCanvas = document.getElementById('overlayCanvas');
+  const ctxTherm = thermalCanvas.getContext('2d');
+  const ctxOverlay = overlayCanvas.getContext('2d');
+
+  const btnStart = document.getElementById('btnStart');
+  const btnStop = document.getElementById('btnStop');
+  const btnSnap = document.getElementById('btnSnap');
+  const btnToggleColormap = document.getElementById('btnToggleColormap');
+  const btnEnhance = document.getElementById('btnEnhance');
+
+  const warmThreshEl = document.getElementById('warmThresh');
+  const minAreaEl = document.getElementById('minArea');
+  const modelSelect = document.getElementById('modelSelect');
+  const fpsTargetEl = document.getElementById('fpsTarget');
+
+  const btnCalibrate = document.getElementById('btnCalibrate');
+  const btnResetCal = document.getElementById('btnResetCal');
+  const realHeightEl = document.getElementById('realHeight');
+  const knownDistEl = document.getElementById('knownDist');
+  const fxValEl = document.getElementById('fxVal');
+
+  const detCountEl = document.getElementById('detCount');
+  const warmCountEl = document.getElementById('warmCount');
+  const statText = document.getElementById('statText');
+
+  const btnToggleBoxes = document.getElementById('btnToggleBoxes');
+  const btnToggleLabels = document.getElementById('btnToggleLabels');
+  const btnCalibMode = document.getElementById('btnCalibMode');
+  const btnManualFx = document.getElementById('btnManualFx');
+
+  // state
+  let stream = null;
+  let model = null;
+  let running = false;
+  let useColormap = true;
+  let enhance = false;
+  let showBoxes = true;
+  let showLabels = true;
+  let useCalibration = true;
+  let fx = null; // focal length in pixels
+  let lastDetections = [];
+  let lastWarmCount = 0;
+
+  // load model
+  statText.textContent = 'loading model...';
+  try{
+    model = await cocoSsd.load();
+    statText.textContent = 'model loaded';
+  }catch(e){
+    statText.textContent = 'model load failed';
+    console.error('model load error', e);
+  }
+
+  // helpers: thermal colormap mapping: map intensity [0..255] -> RGB
+  function colormapInferno(v){
+    // approximate inferno using a simple gradient stops for speed
+    // v in [0,255]
+    const t = v/255;
+    // stops: black -> deep purple -> red -> orange -> yellow -> white
+    const stops = [
+      [0.0,[0,0,0]],
+      [0.18,[60,0,80]],
+      [0.4,[180,20,60]],
+      [0.65,[255,90,20]],
+      [0.85,[255,200,50]],
+      [1.0,[255,250,220]]
+    ];
+    let i=0;
+    while(i<stops.length-1 && t>stops[i+1][0]) i++;
+    const a = stops[i], b = stops[i+1];
+    const localT = (t - a[0]) / (b[0]-a[0]);
+    const C = [
+      Math.round(a[1][0] + (b[1][0]-a[1][0]) * localT),
+      Math.round(a[1][1] + (b[1][1]-a[1][1]) * localT),
+      Math.round(a[1][2] + (b[1][2]-a[1][2]) * localT)
+    ];
+    return C;
+  }
+
+  function applyThermalEffect(imageData, outCtx){
+    const w = imageData.width, h = imageData.height;
+    const src = imageData.data;
+    const dst = new Uint8ClampedArray(src.length);
+    // compute luminance and optionally enhance
+    for(let y=0;y<h;y++){
+      for(let x=0;x<w;x++){
+        const i = (y*w + x)*4;
+        let r = src[i], g = src[i+1], b = src[i+2];
+        // luminance
+        let lum = 0.2126*r + 0.7152*g + 0.0722*b;
+        // optionally low-light enhance: simple gamma boost + contrast
+        if(enhance){
+          // gamma
+          lum = 255 * Math.pow(lum/255, 0.75);
+          // contrast
+          lum = ((lum - 128)*1.2) + 128;
+        }
+        lum = Math.max(0, Math.min(255, lum));
+        if(useColormap){
+          const col = colormapInferno(Math.round(lum));
+          dst[i] = col[0]; dst[i+1] = col[1]; dst[i+2] = col[2]; dst[i+3] = 255;
+        }else{
+          dst[i] = dst[i+1] = dst[i+2] = lum; dst[i+3] = 255;
+        }
+      }
+    }
+    const out = new ImageData(dst, w, h);
+    outCtx.putImageData(out, 0, 0);
+  }
+
+  // start camera
+  async function startCamera(){
+    if(running) return;
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {width:1280, height:720, facingMode:"environment"},
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      resizeCanvases();
+      running = true;
+      statText.textContent = 'running';
+      runLoop();
+    }catch(e){
+      console.error('camera start error', e);
+      statText.textContent = 'camera error';
+      alert('Could not start camera: ' + e.message);
+    }
+  }
+
+  function stopCamera(){
+    running = false;
+    statText.textContent = 'stopped';
+    if(stream){
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+  }
+
+  function resizeCanvases(){
+    const w = video.videoWidth || 1280;
+    const h = video.videoHeight || 720;
+    thermalCanvas.width = w;
+    thermalCanvas.height = h;
+    overlayCanvas.width = w;
+    overlayCanvas.height = h;
+    thermalCanvas.style.width = '100%';
+    thermalCanvas.style.height = '100%';
+    overlayCanvas.style.width = '100%';
+    overlayCanvas.style.height = '100%';
+  }
+
+  // returns average intensity (0-255) for pixels inside bbox from current thermal canvas image
+  function meanIntensityInBox(box){
+    const [x,y,w,h] = box.map(v=>Math.round(v));
+    const ctx = ctxTherm;
+    try{
+      const data = ctx.getImageData(x,y,w,h).data;
+      let sum=0, count=0;
+      for(let i=0;i<data.length;i+=4){
+        // compute luminance from displayed colormap - we can approximate by averaging channels
+        const r = data[i], g = data[i+1], b = data[i+2];
+        const lum = (r + g + b) / 3.0;
+        sum += lum;
+        count++;
+      }
+      return count ? (sum/count) : 0;
+    }catch(e){
+      // out of bounds or cross-origin
+      return 0;
+    }
+  }
+
+  // simple heuristics: compute connected warm area within bbox by thresholding luminance
+  function warmFractionInBox(box, threshold){
+    const [x,y,w,h] = box.map(v=>Math.round(v));
+    const ctx = ctxTherm;
+    try{
+      const data = ctx.getImageData(x,y,w,h).data;
+      let warmCount=0, total=0;
+      for(let i=0;i<data.length;i+=4){
+        const r = data[i], g = data[i+1], b = data[i+2];
+        const lum = (r + g + b)/3;
+        if(lum >= threshold) warmCount++;
+        total++;
+      }
+      return total? (warmCount/total) : 0;
+    }catch(e){
+      return 0;
+    }
+  }
+
+  // draw detections
+  function drawDetections(dets){
+    ctxOverlay.clearRect(0,0,overlayCanvas.width, overlayCanvas.height);
+    ctxOverlay.font = '18px Inter, sans-serif';
+    ctxOverlay.lineWidth = 2;
+    let warmCount=0;
+    dets.forEach(d=>{
+      const [x,y,w,h] = d.bbox;
+      const mean = d.meanIntensity;
+      const isWarm = d.isWarm;
+      if(showBoxes){
+        ctxOverlay.strokeStyle = isWarm ? 'rgba(255,120,40,0.95)' : 'rgba(90,200,255,0.9)';
+        ctxOverlay.fillStyle = isWarm ? 'rgba(255,120,40,0.12)' : 'rgba(90,200,255,0.06)';
+        ctxOverlay.fillRect(x,y,w,h);
+        ctxOverlay.strokeRect(x+0.5, y+0.5, w-1, h-1);
+      }
+      if(showLabels){
+        const label = `${d.class} ${isWarm? '🔥':''} ${d.estimatedDistance? (d.estimatedDistance.toFixed(2)+'m') : ''}`;
+        const padding = 6;
+        const textW = ctxOverlay.measureText(label).width + padding*2;
+        ctxOverlay.fillStyle = 'rgba(6,10,20,0.6)';
+        ctxOverlay.fillRect(x, Math.max(0,y-28), textW, 26);
+        ctxOverlay.fillStyle = '#fff';
+        ctxOverlay.fillText(label, x+8, Math.max(16,y-8));
+      }
+      if(isWarm) warmCount++;
+    });
+    detCountEl.textContent = dets.length;
+    warmCountEl.textContent = warmCount;
+  }
+
+  // main loop
+  let lastFrameTime = 0;
+  async function runLoop(){
+    if(!running) return;
+    if(video.readyState < 2){
+      requestAnimationFrame(runLoop);
+      return;
+    }
+    resizeCanvases();
+
+    const fpsTarget = Math.max(3, Number(fpsTargetEl.value || 12));
+    const now = performance.now();
+    if(now - lastFrameTime < (1000 / fpsTarget)){
+      requestAnimationFrame(runLoop);
+      return;
+    }
+    lastFrameTime = now;
+
+    // draw video to thermalCanvas then process
+    ctxTherm.drawImage(video, 0,0, thermalCanvas.width, thermalCanvas.height);
+    // get frame and create thermal effect on same canvas
+    const frame = ctxTherm.getImageData(0,0,thermalCanvas.width, thermalCanvas.height);
+    applyThermalEffect(frame, ctxTherm);
+
+    // run detector on (resized) video frame - use offscreen smaller image for speed
+    const detectionImg = document.createElement('canvas');
+    const scale = 0.5; // run model on half size
+    detectionImg.width = Math.round(video.videoWidth * scale);
+    detectionImg.height = Math.round(video.videoHeight * scale);
+    const dctx = detectionImg.getContext('2d');
+    dctx.drawImage(video, 0,0, detectionImg.width, detectionImg.height);
+
+    let predictions = [];
+    try{
+      predictions = await model.detect(detectionImg);
+    }catch(e){
+      console.error('detect err', e);
+    }
+
+    // map predictions to original scale
+    const dets = [];
+    const warmThreshold = Number(warmThreshEl.value);
+    const minArea = Number(minAreaEl.value) || 100;
+
+    predictions.forEach(p=>{
+      // only relevant classes (people, cat, dog, etc.)
+      // but we'll keep whatever model returns and let thresholding decide
+      const [x,y,w,h] = p.bbox.map((v,i)=> v / scale); // scale up
+      // filter tiny
+      if(w*h < minArea) return;
+      // compute mean intensity inside box from thermal display
+      const meanInt = meanIntensityInBox([x,y,w,h]);
+      const warmFrac = warmFractionInBox([x,y,w,h], warmThreshold);
+      const isWarm = (meanInt >= warmThreshold) || (warmFrac > 0.08); // heuristics
+
+      // estimate distance via pinhole if fx available and real height provided
+      let estimatedDistance = null;
+      if(fx && parseFloat(realHeightEl.value) > 0){
+        const pixelHeight = h;
+        estimatedDistance = (fx * parseFloat(realHeightEl.value)) / pixelHeight;
+      }
+
+      dets.push({
+        bbox: [x,y,w,h],
+        score: p.score,
+        class: p.class,
+        meanIntensity: meanInt,
+        warmFraction: warmFrac,
+        isWarm: isWarm,
+        estimatedDistance: estimatedDistance
+      });
+    });
+
+    lastDetections = dets;
+    lastWarmCount = dets.filter(d=>d.isWarm).length;
+    drawDetections(dets);
+
+    requestAnimationFrame(runLoop);
+  }
+
+  // button handlers
+  btnStart.addEventListener('click', startCamera);
+  btnStop.addEventListener('click', ()=>{ stopCamera(); });
+  btnSnap.addEventListener('click', ()=>{
+    // merge thermal + overlay into a single image
+    const w = thermalCanvas.width, h = thermalCanvas.height;
+    const tmp = document.createElement('canvas'); tmp.width=w; tmp.height=h;
+    const tctx = tmp.getContext('2d');
+    tctx.drawImage(thermalCanvas,0,0);
+    tctx.drawImage(overlayCanvas,0,0);
+    const url = tmp.toDataURL('image/png');
+    const a = document.createElement('a'); a.href = url; a.download = 'thermal_snapshot.png'; a.click();
+  });
+
+  btnToggleColormap.addEventListener('click', ()=>{
+    useColormap = !useColormap;
+    btnToggleColormap.classList.toggle('active', useColormap);
+    btnToggleColormap.textContent = 'Thermal Colormap: ' + (useColormap? 'ON':'OFF');
+  });
+
+  btnEnhance.addEventListener('click', ()=>{
+    enhance = !enhance;
+    btnEnhance.classList.toggle('active', enhance);
+    btnEnhance.textContent = 'Low-light Enhance: ' + (enhance? 'ON':'OFF');
+  });
+
+  btnCalibrate.addEventListener('click', ()=>{
+    // calibration: user should have a target of known realHeight at knownDist visible
+    // we compute average pixel height from current detections (prefer class 'person') and compute fx = (pixelHeight * knownDist)/realHeight
+    if(!lastDetections.length){
+      alert('No detections in view to calibrate. Show the object (person/animal) clearly and try again.');
+      return;
+    }
+    const realH = parseFloat(realHeightEl.value);
+    const knownD = parseFloat(knownDistEl.value);
+    if(!(realH > 0 && knownD > 0)){
+      alert('Please enter positive values for real height and known distance.');
+      return;
+    }
+    // prefer 'person' if available
+    let candidates = lastDetections.filter(d=>d.class && ['person','dog','cat'].includes(d.class));
+    if(candidates.length === 0) candidates = lastDetections;
+    // take median pixel height
+    const heights = candidates.map(c=>c.bbox[3]).sort((a,b)=>a-b);
+    const medianH = heights[Math.floor(heights.length/2)];
+    if(!medianH || medianH < 5){
+      alert('Detected object too small for reliable calibration.');
+      return;
+    }
+    fx = (medianH * knownD) / realH;
+    fxValEl.textContent = fx.toFixed(1) + ' px';
+    btnCalibrate.classList.add('active');
+    alert('Calibration done. fx computed.');
+  });
+
+  btnResetCal.addEventListener('click', ()=>{
+    fx = null;
+    fxValEl.textContent = '—';
+    btnCalibrate.classList.remove('active');
+  });
+
+  btnToggleBoxes.addEventListener('click', ()=>{
+    showBoxes = !showBoxes;
+    btnToggleBoxes.classList.toggle('active', showBoxes);
+    btnToggleBoxes.textContent = 'Boxes: ' + (showBoxes? 'ON':'OFF');
+  });
+
+  btnToggleLabels.addEventListener('click', ()=>{
+    showLabels = !showLabels;
+    btnToggleLabels.classList.toggle('active', showLabels);
+    btnToggleLabels.textContent = 'Labels: ' + (showLabels? 'ON':'OFF');
+  });
+
+  btnCalibMode.addEventListener('click', ()=>{
+    useCalibration = !useCalibration;
+    btnCalibMode.classList.toggle('active', useCalibration);
+  });
+
+  btnManualFx.addEventListener('click', ()=>{
+    const val = prompt('Enter focal length fx in pixels (numeric) or empty to cancel', fx? fx.toString() : '');
+    if(val){
+      const v = parseFloat(val);
+      if(isFinite(v) && v>0){
+        fx = v;
+        fxValEl.textContent = fx.toFixed(1) + ' px';
+      }else alert('Invalid fx value');
+    }
+  });
+
+  // resize overlay on window resize
+  window.addEventListener('resize', resizeCanvases);
+
+  // stop camera when page unloads
+  window.addEventListener('beforeunload', ()=>{ stopCamera(); });
+
+  // auto-start camera for convenience if allowed
+  // await startCamera();
+
+})();
+</script>
+</body>
+</html>
